@@ -1,16 +1,20 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include <QMainWindow>
-#include <QMouseEvent>
 #include "qcustomplot.h"
+#include "tsbspline.h"
+#include <QMainWindow>
 #include <QMessageBox>
+#include <QMouseEvent>
+//#include <QShortcut>
 
 namespace Ui {
 class MainWindow;
 }
 
-enum SelectionMode {noSelection, pointSelected, pointDragging};
+void msgBox(const QString& prompt);
+
+enum SelectionMode {noSelection, pointSelected, pointDragging, plotDragging};
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -20,21 +24,34 @@ public:
     ~MainWindow();
 
 private:
-    Ui::MainWindow *ui;
-    QCPGraph* currentGraph;
-    QCPGraph* selectionGraph;
-    //QCPData* selectedPoint;
+    double oldX, oldY;
     double selectedKey;
+    QCPData* selectedPoint;
+    QCPGraph* copiedGraph;
+    QCPGraph* currentGraph;
+    QCPGraph* interpolatedGraph;
+    QCPGraph* selectionGraph;
     SelectionMode selectionMode;
+    TSBSpline* spline;
+    Ui::MainWindow *ui;
 
 private slots:
-    void mouseMoveOverPlot(QMouseEvent* mouseEvent);
     void mouseClickedOverPlot(QMouseEvent* mouseEvent);
+    void mouseMoveOverPlot(QMouseEvent* mouseEvent);
     void mouseReleasedOverPlot(QMouseEvent* mouseEvent);
+    void mouseWheeledOverPlot(QWheelEvent* mouseEvent);
+    void undo();
+    void redo();
+
+    void inputFromFile();
+    void outputToFile();
+    void replot();
 
 protected:
+    void addNewGraph(QCPGraph* &graphPtr, QCPGraph::LineStyle lineStyle, Qt::GlobalColor color, double pointSize = 0.0);
     void pixelsToCoords(double x, double y, double& key, double& value);
-    void addNewGraph(QCPGraph* &graphPtr, Qt::GlobalColor color, double pointSize);
+    void resizeEvent(QResizeEvent* event);
+
 };
 
 #endif // MAINWINDOW_H
