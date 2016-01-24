@@ -15,10 +15,13 @@ TEMPLATE = app
 SOURCES += main.cpp\
         mainwindow.cpp \
     qcustomplot.cpp \
-    tsbspline.cpp
+    tsbspline.cpp \
+    pointredactor.cpp
 
 HEADERS  += mainwindow.h \
     qcustomplot.h \
-    tsbspline.h
+    tsbspline.h \
+    pointredactor.h
 
-FORMS    += mainwindow.ui
+FORMS    += mainwindow.ui \
+    pointredactor.ui
