@@ -25,3 +25,6 @@ HEADERS  += mainwindow.h \
 
 FORMS    += mainwindow.ui \
     pointredactor.ui
+
+DISTFILES += \
+    install.sh
