@@ -3,33 +3,38 @@
 
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
-    ui(new Ui::MainWindow), currentGraph(nullptr), spline(nullptr), copiedSpline(nullptr)
+    ui(new Ui::MainWindow), nSplines(0), selectionMode(noSelection)
 {
     ui->setupUi(this);
-    new QShortcut(QKeySequence(Qt::CTRL + Qt::Key_Z), this, SLOT(undo()));
-    new QShortcut(QKeySequence(Qt::CTRL + Qt::Key_Y), this, SLOT(redo()));
-    new QShortcut(QKeySequence(Qt::CTRL + Qt::Key_O), this, SLOT(inputFromFile()));
-    new QShortcut(QKeySequence(Qt::CTRL + Qt::Key_S), this, SLOT(outputToFile()));
+    undoShortcut = new QShortcut(QKeySequence(Qt::CTRL + Qt::Key_Z), this, SLOT(undo()));
+    redoShortcut = new QShortcut(QKeySequence(Qt::CTRL + Qt::Key_Y), this, SLOT(redo()));
+    openFileShortcut = new QShortcut(QKeySequence(Qt::CTRL + Qt::Key_O), this, SLOT(inputFromFile()));
+    saveFileShortcut = new QShortcut(QKeySequence(Qt::CTRL + Qt::Key_S), this, SLOT(outputToFile()));
+    connect(ui->action_new, SIGNAL(triggered(bool)), this, SLOT(clearAllSplines()));
+    connect(ui->action_save, SIGNAL(triggered(bool)), this, SLOT(outputToFile()));
+    connect(ui->action_load, SIGNAL(triggered(bool)), this, SLOT(inputFromFile()));
+    connect(ui->action_quit, SIGNAL(triggered(bool)), this, SLOT(close()));
+
+    connect(ui->action_undo, SIGNAL(triggered(bool)), this, SLOT(undo()));
+    connect(ui->action_redo, SIGNAL(triggered(bool)), this, SLOT(redo()));
+
     connect(ui->customPlot,SIGNAL(mouseMove(QMouseEvent*)), this, SLOT(mouseMoveOverPlot(QMouseEvent*)));
     connect(ui->customPlot,SIGNAL(mousePress(QMouseEvent*)), this, SLOT(mouseClickedOverPlot(QMouseEvent*)));
     connect(ui->customPlot,SIGNAL(mouseRelease(QMouseEvent*)), this, SLOT(mouseReleasedOverPlot(QMouseEvent*)));
     connect(ui->customPlot,SIGNAL(mouseWheel(QWheelEvent*)), this, SLOT(mouseWheeledOverPlot(QWheelEvent*)));
     connect(ui->customPlot, SIGNAL(mouseDoubleClick(QMouseEvent*)), this, SLOT(mouseDoubleClickedOverPlot(QMouseEvent*)));
-    addNewGraph(selectionGraph, QCPCurve::LineStyle::lsNone, Qt::GlobalColor::green, 10.0);
-    addNewGraph(interpolatedGraph, QCPCurve::LineStyle::lsLine, Qt::GlobalColor::black);
-    addNewGraph(currentGraph,  QCPCurve::LineStyle::lsNone, Qt::GlobalColor::red, 5.0);
-    spline = new TSBSpline(currentGraph);
+
 }
 
 MainWindow::~MainWindow()
 {
-    delete spline;
     delete ui;
 }
 
 void MainWindow::mouseMoveOverPlot(QMouseEvent *mouseEvent)
 {
-    if (selectionMode!=pointRedacting) selectionGraph->clearData();
+    //if (!splinesData.size()) return;
+    if (selectionMode!=pointRedacting && splinesData.size()) splinesData[activeSpline].selectionGraph->clearData();
     double key, value, eps;
     eps = 5*(ui->customPlot->xAxis->range().upper - ui->customPlot->xAxis->range().lower) /
            ui->customPlot->width() ;
@@ -39,11 +44,11 @@ void MainWindow::mouseMoveOverPlot(QMouseEvent *mouseEvent)
     {
     case pointDragging:
     {
-        selectionGraph->removeData(selectedKey);
-        copiedGraph->removeData(selectedKey);
-        selectionGraph->addData(selectedKey, key, value);
-        copiedGraph->addData(selectedKey, key, value);
-        copiedSpline->setPoint(int(selectedKey), key, value);
+        splinesData[activeSpline].selectionGraph->removeData(selectedKey);
+        splinesData[activeSpline].copiedGraph->removeData(selectedKey);
+        splinesData[activeSpline].selectionGraph->addData(selectedKey, key, value);
+        splinesData[activeSpline].copiedGraph->addData(selectedKey, key, value);
+        splinesData[activeSpline].copiedSpline->setPoint(int(selectedKey), key, value);
         break;
     }
     case plotDragging:
@@ -60,13 +65,13 @@ void MainWindow::mouseMoveOverPlot(QMouseEvent *mouseEvent)
     }
     default:
     {
-        selectionMode = noSelection;
-
-        if (currentGraph == nullptr) return;
-        int nSelected = spline->searchByKeyValue(key, value, eps);
+        if (!splinesData.size()) return;
+        selectionMode = noSelection;        
+        if (splinesData[activeSpline].currentGraph == nullptr) return;
+        int nSelected = splinesData[activeSpline].spline->searchByKeyValue(key, value, eps);
         if (nSelected!=-1) {
-            TSBPoint& point = spline->getPointAt(nSelected);
-            selectionGraph->addData(point.t(), point.x(), point.y());
+            TSBPoint& point = splinesData[activeSpline].spline->getPointAt(nSelected);
+            splinesData[activeSpline].selectionGraph->addData(point.t(), point.x(), point.y());
             selectionMode = pointSelected;
             selectedKey = point.t();
         }
@@ -85,7 +90,8 @@ void MainWindow::mouseClickedOverPlot(QMouseEvent *mouseEvent)
         double key, value;
         pixelsToCoords(mouseEvent->x(), mouseEvent->y(), key, value);
         if (mouseEvent->button() == Qt::LeftButton) {
-            spline->addAction(addPoint, spline->size(), key, value);
+            if (!splinesData.size()) return;
+            splinesData[activeSpline].spline->addAction(addPoint, splinesData[activeSpline].spline->size(), key, value);
         }
         else if (mouseEvent->button() == Qt::RightButton) {
             oldX = key;
@@ -97,19 +103,19 @@ void MainWindow::mouseClickedOverPlot(QMouseEvent *mouseEvent)
     case pointSelected:
     {
         if (mouseEvent->button() == Qt::LeftButton) {
-            oldX = currentGraph->data()->value(selectedKey).key;
-            oldY = currentGraph->data()->value(selectedKey).value;
-            addNewGraph(copiedGraph,  QCPCurve::LineStyle::lsNone, QColor(255,255,255, 128), 5.0);
-            addNewGraph(copiedInterpolatedGraph, QCPCurve::LineStyle::lsLine, QColor(0,0,0,128));
-            copiedGraph->addData(spline->getTimes(), spline->getKeys(), spline->getValues());
-            copiedSpline = new TSBSpline(copiedGraph);
-            copiedSpline->setPoints(spline->getPoints());
+            oldX = splinesData[activeSpline].currentGraph->data()->value(selectedKey).key;
+            oldY = splinesData[activeSpline].currentGraph->data()->value(selectedKey).value;
+            addNewGraph(splinesData[activeSpline].copiedGraph,  QCPCurve::LineStyle::lsNone, QColor(255,255,255, 128), 5.0);
+            addNewGraph(splinesData[activeSpline].copiedInterpolatedGraph, QCPCurve::LineStyle::lsLine, QColor(0,0,0,128));
+            splinesData[activeSpline].copiedGraph->addData(splinesData[activeSpline].spline->getTimes(), splinesData[activeSpline].spline->getKeys(), splinesData[activeSpline].spline->getValues());
+            splinesData[activeSpline].copiedSpline = new TSBSpline(splinesData[activeSpline].copiedGraph);
+            splinesData[activeSpline].copiedSpline->setPoints(splinesData[activeSpline].spline->getPoints());
             selectionMode = pointDragging;
         }
         else if (mouseEvent->button() == Qt::RightButton) {
-            //currentGraph->removeData(selectedKey);
-            spline->addAction(deletePoint, selectedKey, currentGraph->data()->value(selectedKey).key, currentGraph->data()->value(selectedKey).value, spline->getPointAt(selectedKey).tension(), spline->getPointAt(selectedKey).continuity(), spline->getPointAt(selectedKey).bias());
-            selectionGraph->clearData();
+            //splinesData[activeSpline].currentGraph->removeData(selectedKey);
+            splinesData[activeSpline].spline->addAction(deletePoint, selectedKey, splinesData[activeSpline].currentGraph->data()->value(selectedKey).key, splinesData[activeSpline].currentGraph->data()->value(selectedKey).value, splinesData[activeSpline].spline->getPointAt(selectedKey).tension(), splinesData[activeSpline].spline->getPointAt(selectedKey).continuity(), splinesData[activeSpline].spline->getPointAt(selectedKey).bias());
+            splinesData[activeSpline].selectionGraph->clearData();
             selectionMode = noSelection;
         }
         break;
@@ -118,14 +124,14 @@ void MainWindow::mouseClickedOverPlot(QMouseEvent *mouseEvent)
     {
         pointRedactor->hide();
         delete pointRedactor;
-        spline->addAction(redactPoint, selectedKey, oldX, oldY, spline->getPointAt(selectedKey).tension(),  spline->getPointAt(selectedKey).continuity(), spline->getPointAt(selectedKey).bias(), 0, 0,
-                          copiedSpline->getPointAt(selectedKey).tension() - spline->getPointAt(selectedKey).tension(), copiedSpline->getPointAt(selectedKey).continuity() - spline->getPointAt(selectedKey).continuity(), copiedSpline->getPointAt(selectedKey).bias() - spline->getPointAt(selectedKey).bias());
-        ui->customPlot->removePlottable(copiedGraph);
-        ui->customPlot->removePlottable(copiedInterpolatedGraph);
-        delete copiedSpline;
-        copiedSpline = nullptr;
+        splinesData[activeSpline].spline->addAction(redactPoint, selectedKey, oldX, oldY, splinesData[activeSpline].spline->getPointAt(selectedKey).tension(),  splinesData[activeSpline].spline->getPointAt(selectedKey).continuity(), splinesData[activeSpline].spline->getPointAt(selectedKey).bias(), 0, 0,
+                          splinesData[activeSpline].copiedSpline->getPointAt(selectedKey).tension() - splinesData[activeSpline].spline->getPointAt(selectedKey).tension(), splinesData[activeSpline].copiedSpline->getPointAt(selectedKey).continuity() - splinesData[activeSpline].spline->getPointAt(selectedKey).continuity(), splinesData[activeSpline].copiedSpline->getPointAt(selectedKey).bias() - splinesData[activeSpline].spline->getPointAt(selectedKey).bias());
+        ui->customPlot->removePlottable(splinesData[activeSpline].copiedGraph);
+        ui->customPlot->removePlottable(splinesData[activeSpline].copiedInterpolatedGraph);
+        delete splinesData[activeSpline].copiedSpline;
+        splinesData[activeSpline].copiedSpline = nullptr;
         selectionMode = noSelection;
-        selectionGraph->clearData();
+        splinesData[activeSpline].selectionGraph->clearData();
     }
     default:{}
     }
@@ -137,28 +143,28 @@ void MainWindow::mouseDoubleClickedOverPlot(QMouseEvent *mouseEvent)
     if (selectionMode == pointSelected) {
         selectionMode = pointRedacting;
         pointRedactor = new PointRedactor(this);
-        pointRedactor->setGeometry(50, 50, 160, 240);
+        pointRedactor->setGeometry(200, 50, 160, 240);
         pointRedactor->show();
 
-        addNewGraph(copiedGraph,  QCPCurve::LineStyle::lsNone, QColor(255,255,255, 128), 5.0);
-        addNewGraph(copiedInterpolatedGraph, QCPCurve::LineStyle::lsLine, QColor(0,0,0,128));
-        copiedGraph->addData(spline->getTimes(), spline->getKeys(), spline->getValues());
-        copiedSpline = new TSBSpline(copiedGraph);
-        copiedSpline->setPoints(spline->getPoints());
+        addNewGraph(splinesData[activeSpline].copiedGraph,  QCPCurve::LineStyle::lsNone, QColor(255,255,255, 128), 5.0);
+        addNewGraph(splinesData[activeSpline].copiedInterpolatedGraph, QCPCurve::LineStyle::lsLine, QColor(0,0,0,128));
+        splinesData[activeSpline].copiedGraph->addData(splinesData[activeSpline].spline->getTimes(), splinesData[activeSpline].spline->getKeys(), splinesData[activeSpline].spline->getValues());
+        splinesData[activeSpline].copiedSpline = new TSBSpline(splinesData[activeSpline].copiedGraph);
+        splinesData[activeSpline].copiedSpline->setPoints(splinesData[activeSpline].spline->getPoints());
 
         connect(pointRedactor, SIGNAL(parametersChanged(double, double, double)), this, SLOT(parametersChanged(double, double, double)));
-        pointRedactor->setInterface(spline->getPointAt(selectedKey).tension(), spline->getPointAt(selectedKey).continuity(), spline->getPointAt(selectedKey).bias());
+        pointRedactor->setInterface(splinesData[activeSpline].spline->getPointAt(selectedKey).tension(), splinesData[activeSpline].spline->getPointAt(selectedKey).continuity(), splinesData[activeSpline].spline->getPointAt(selectedKey).bias());
     }
 }
 
 void MainWindow::mouseReleasedOverPlot(QMouseEvent *mouseEvent)
 {
     if (selectionMode == pointDragging) {
-        spline->addAction(movePoint, selectedKey, oldX, oldY, spline->getPointAt(selectedKey).tension(), spline->getPointAt(selectedKey).continuity(), spline->getPointAt(selectedKey).bias(), copiedGraph->data()->value(selectedKey).key - oldX, copiedGraph->data()->value(selectedKey).value - oldY);
-        ui->customPlot->removePlottable(copiedGraph);
-        ui->customPlot->removePlottable(copiedInterpolatedGraph);
-        delete copiedSpline;
-        copiedSpline = nullptr;
+        splinesData[activeSpline].spline->addAction(movePoint, selectedKey, oldX, oldY, splinesData[activeSpline].spline->getPointAt(selectedKey).tension(), splinesData[activeSpline].spline->getPointAt(selectedKey).continuity(), splinesData[activeSpline].spline->getPointAt(selectedKey).bias(), splinesData[activeSpline].copiedGraph->data()->value(selectedKey).key - oldX, splinesData[activeSpline].copiedGraph->data()->value(selectedKey).value - oldY);
+        ui->customPlot->removePlottable(splinesData[activeSpline].copiedGraph);
+        ui->customPlot->removePlottable(splinesData[activeSpline].copiedInterpolatedGraph);
+        delete splinesData[activeSpline].copiedSpline;
+        splinesData[activeSpline].copiedSpline = nullptr;
         selectionMode = pointSelected;       
     }
     else if (selectionMode == plotDragging) {
@@ -181,13 +187,13 @@ void MainWindow::mouseWheeledOverPlot(QWheelEvent *mouseEvent)
 
 void MainWindow::undo()
 {
-    spline->undo();
+    splinesData[activeSpline].spline->undo();
     replot();
 }
 
 void MainWindow::redo()
 {
-    spline->redo();
+    splinesData[activeSpline].spline->redo();
     replot();
 }
 
@@ -199,7 +205,7 @@ void MainWindow::pixelsToCoords(double x, double y, double &key, double &value)
 
 void MainWindow::resizeEvent(QResizeEvent *event)
 {
-    ui->customPlot->setGeometry(10, 10, event->size().width() - 20, event->size().height() -70);
+    ui->customPlot->setGeometry(180, 10, event->size().width() - 200, event->size().height() -70);
 }
 
 void MainWindow::addNewGraph(QCPCurve* &graphPtr, QCPCurve::LineStyle lineStyle, QColor color = Qt::GlobalColor::red, double pointSize)
@@ -218,62 +224,117 @@ void MainWindow::addNewGraph(QCPCurve* &graphPtr, QCPCurve::LineStyle lineStyle,
 
 void MainWindow::replot()
 {
-    spline->makeInterpolatedGraph(interpolatedGraph, ui->customPlot->xAxis, ui->customPlot->yAxis);
-    if (copiedSpline!=nullptr) copiedSpline->makeInterpolatedGraph(copiedInterpolatedGraph, ui->customPlot->xAxis, ui->customPlot->yAxis);
+    if (splinesData.size()) {
+        splinesData[activeSpline].spline->makeInterpolatedGraph(splinesData[activeSpline].interpolatedGraph, ui->customPlot->xAxis, ui->customPlot->yAxis);
+        if (splinesData[activeSpline].copiedSpline!=nullptr) splinesData[activeSpline].copiedSpline->makeInterpolatedGraph(splinesData[activeSpline].copiedInterpolatedGraph, ui->customPlot->xAxis, ui->customPlot->yAxis);
+    }
     ui->customPlot->replot();
 }
 
 void MainWindow::parametersChanged(double tension, double continuity, double bias)
 {
-    copiedSpline->setParametersAt(int(selectedKey), tension, continuity, bias);
+    splinesData[activeSpline].copiedSpline->setParametersAt(int(selectedKey), tension, continuity, bias);
+    replot();
+}
+
+void MainWindow::addNewSpline()
+{
+    splinesData.append(SplineData());
+    activeSpline = splinesData.size() - 1;
+    addNewGraph(splinesData[activeSpline].selectionGraph, QCPCurve::LineStyle::lsNone, Qt::GlobalColor::green, 10.0);
+    addNewGraph(splinesData[activeSpline].interpolatedGraph, QCPCurve::LineStyle::lsLine, Qt::GlobalColor::black);
+    addNewGraph(splinesData[activeSpline].currentGraph,  QCPCurve::LineStyle::lsNone, Qt::GlobalColor::red, 5.0);
+    splinesData[activeSpline].spline = new TSBSpline(splinesData[activeSpline].currentGraph);
+    ui->spinBox->setMaximum(activeSpline);
+    ui->spinBox->setValue(activeSpline);
+}
+
+void MainWindow::setActiveSpline(int i)
+{
+    QCPScatterStyle scatterStyle;
+    scatterStyle.setPen(QColor(255, 0, 0, 255));
+    scatterStyle.setSize(splinesData[activeSpline].currentGraph->scatterStyle().size());
+    scatterStyle.setShape(splinesData[activeSpline].currentGraph->scatterStyle().shape());
+
+    splinesData[i].currentGraph->setScatterStyle(scatterStyle);
+    splinesData[i].interpolatedGraph->setPen(QColor(0, 0, 0, 255));
+
+    scatterStyle.setPen(QColor(255, 0, 0, 64));
+    for (int j=0; j < splinesData.size(); ++j) {
+        if (j==i) continue;
+        splinesData[j].currentGraph->setScatterStyle(scatterStyle);
+        splinesData[j].interpolatedGraph->setPen(QColor(0, 0, 0, 64));
+    }
+    activeSpline = i;
+    replot();
+}
+
+void MainWindow::clearAllSplines()
+{
+    for (int i=0; i<splinesData.size(); ++i)
+    {
+        splinesData[i].currentGraph->clearData();
+        splinesData[i].interpolatedGraph->clearData();
+    }
+    splinesData.clear();
+    ui->spinBox->setMaximum(0);
+    ui->spinBox->setEnabled(false);
+    ui->pushButton_2->setEnabled(false);
     replot();
 }
 
 void MainWindow::inputFromFile()
 {
-    QVector<TSBPoint> points;
-    currentGraph->clearData();
+    clearAllSplines();
     QFile inputFile(QFileDialog::getOpenFileName(this, "Выберите файл для загрузки данных", "/home/astrowander/libs", "CSV files (*.csv)"));
-    if (!inputFile.open(QIODevice::ReadOnly)) {
-        msgBox("Невозможно открыть файл");
-        return;
-    }
-    int i = -1;
-    while (!inputFile.atEnd()) {
-        QString ss = inputFile.readLine();
-        QStringList words = ss.split(";");
-        if (words.size() < 6) {
-            msgBox( "Данные в файле неверного формата");
-            return;
-        }
+    if (!haltIfError(inputFile.open(QIODevice::ReadOnly), "Невозможно открыть файл")) return;
 
-        bool ok;
-        double t = words[0].toDouble(&ok), key = words[1].toDouble(&ok), value = words[2].toDouble(&ok);
-        double tension = words[3].toDouble(&ok), continuity = words[4].toDouble(&ok), bias = words[5].toDouble(&ok);
-        if (!ok) {
-            msgBox( "Данные в файле неверного формата");
-            return;
+    QString ss = inputFile.readLine();
+    QStringList words;
+    bool ok[6];
+    nSplines = ss.toInt(&ok[0]);
+    if (!haltIfError(ok[0] && (nSplines > 0),  "Данные в файле неверного формата")) return;
+
+    for (int i=0; i < nSplines; ++i) {
+        ss = inputFile.readLine();
+        int nPoints = ss.toInt(&ok[0]);
+        if (!haltIfError(ok[0],  "Данные в файле неверного формата")) return;
+        addNewSpline();
+        QVector<TSBPoint>& points = splinesData[i].spline->getPoints();
+        for (int j=0; j<nPoints; ++j) {
+            ss = inputFile.readLine();
+            words = ss.split(';');
+            if (!haltIfError(words.size() == 6, "Данные в файле неверного формата")) return;
+            double t = words[0].toDouble(&ok[0]), key = words[1].toDouble(&ok[1]), value = words[2].toDouble(&ok[2]);
+            double tension = words[3].toDouble(&ok[3]), continuity = words[4].toDouble(&ok[4]), bias = words[5].toDouble(&ok[5]);
+            if (!haltIfError(ok[0] && ok[1] && ok[2] && ok[3] && ok[4] && ok[5],  "Данные в файле неверного формата")) return;
+            points.append(TSBPoint(key, value, t, tension, continuity, bias));
+            splinesData[i].currentGraph->addData(t, key, value);
         }
-        points.append(TSBPoint(key, value, t, tension, continuity, bias));
-        currentGraph->addData(t, key, value);
+        splinesData[i].spline->makeInterpolatedGraph(splinesData[i].interpolatedGraph, ui->customPlot->xAxis, ui->customPlot->yAxis);
     }
-    spline->clearActions();
-    spline->setPoints(points);
     ui->customPlot->rescaleAxes();
-    replot();
+
+    if (!ui->spinBox->isEnabled()) ui->spinBox->setEnabled(true);
+    if (!ui->pushButton_2->isEnabled()) ui->pushButton_2->setEnabled(true);
+    ui->spinBox->setMaximum(nSplines - 1);
+    setActiveSpline(nSplines - 1);
+    //replot();
 }
 
 void MainWindow::outputToFile()
 {
     QFile outputFile(QFileDialog::getSaveFileName(this, "Выберите файл для сохранения данных", "/home/astrowander/libs", "CSV files (*.csv)"));
     QTextStream outputStream(&outputFile);
-    if (!outputFile.open(QIODevice::WriteOnly)) {
-        msgBox("Невозможно открыть файл");
-        return;
-    }
-    QVector<TSBPoint>& points = spline->getPoints();
-    for (int i=0; i<points.size(); ++i) {
-        outputStream << points[i].print();
+    if (!haltIfError(outputFile.open(QIODevice::WriteOnly), "Невозможно открыть файл")) return;
+    outputStream << QString::number(splinesData.size()) << "\n";
+
+    for (int i=0; i < splinesData.size(); ++i) {
+         outputStream << QString::number(splinesData[i].spline->size()) << "\n";
+         QVector<TSBPoint>& points = splinesData[i].spline->getPoints();
+         for (int i=0; i<points.size(); ++i) {
+             outputStream << points[i].print();
+         }
     }
     outputFile.close();
 }
@@ -285,4 +346,46 @@ void msgBox(const QString &prompt)
     QMessageBox messageBox;
     messageBox.setText(prompt);
     messageBox.exec();
+}
+
+void MainWindow::on_pushButton_clicked()
+{
+    if (!ui->spinBox->isEnabled()) ui->spinBox->setEnabled(true);
+    if (!ui->pushButton_2->isEnabled()) ui->pushButton_2->setEnabled(true);
+    addNewSpline();
+    //ui->spinBox->setMaximum(splinesData.size() - 1);
+}
+
+void MainWindow::on_spinBox_valueChanged(int arg1)
+{
+    if (arg1>=0 && arg1 < splinesData.size()) setActiveSpline(arg1);
+    this->setFocus();
+}
+
+void MainWindow::on_pushButton_2_clicked()
+{
+    ui->customPlot->removePlottable(splinesData[activeSpline].currentGraph);
+    ui->customPlot->removePlottable(splinesData[activeSpline].interpolatedGraph);
+    splinesData.removeAt(activeSpline);
+    ui->spinBox->setValue(--activeSpline);
+    ui->spinBox->setMaximum(splinesData.size() - 1);
+    if (!(splinesData.size())) {
+        ui->spinBox->setEnabled(false);
+        ui->pushButton_2->setEnabled(false);
+    }
+    replot();
+}
+
+bool MainWindow::haltIfError(bool ok, const QString& message)
+{
+    if (!ok) {
+        msgBox(message);
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::on_pushButton_3_clicked()
+{
+    clearAllSplines();
 }
