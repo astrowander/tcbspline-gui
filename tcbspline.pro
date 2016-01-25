@@ -5,8 +5,8 @@
 #-------------------------------------------------
 
 QT       += core gui
-
-greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
+QMAKE_CXXFLAGS += -std=c++0x
+greaterThan(QT_MAJOR_VERSION, 4): QT += widgets printsupport
 
 TARGET = tcbspline
 TEMPLATE = app
@@ -14,9 +14,17 @@ TEMPLATE = app
 
 SOURCES += main.cpp\
         mainwindow.cpp \
-    qcustomplot.cpp
+    qcustomplot.cpp \
+    tsbspline.cpp \
+    pointredactor.cpp
 
 HEADERS  += mainwindow.h \
-    qcustomplot.h
+    qcustomplot.h \
+    tsbspline.h \
+    pointredactor.h
 
-FORMS    += mainwindow.ui
+FORMS    += mainwindow.ui \
+    pointredactor.ui
+
+DISTFILES += \
+    install.sh
